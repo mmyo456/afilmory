@@ -1,0 +1,24 @@
+{
+  "name": "鸭鸭的照片集",
+  "title": "鸭鸭的照片集",
+  "description": "Capturing beautiful moments in life, documenting daily warmth and emotions through my lens.",
+  "url": "https://gallery.ouo.chat",
+  "accentColor": "#007bff",
+  "author": {
+    "name": "鸭鸭",
+    "url": "https://ouo.chat/",
+    "avatar": "https://api.ouo.chat/api/v2/objects/avatar/44wrhytvi0otf9e5ej.png"
+  },
+  "social": {
+    "twitter": "@mmyo456",
+    "github": "mmyo456"
+  },
+  "feed": {
+    "folo": {
+      "challenge": {
+        "feedId": "155982289762921472",
+        "userId": "41312624216137728"
+      }
+    }
+  }
+}
