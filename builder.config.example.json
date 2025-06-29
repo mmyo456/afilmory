@@ -1,10 +1,10 @@
 {
   "storage": {
     "provider": "s3",
-    "bucket": "my-photos",
-    "region": "us-east-1",
+    "bucket": "mmyo-1301064340",
+    "region": "ap-shanghai",
     "prefix": "photos/",
-    "customDomain": "https://cdn.example.com",
-    "endpoint": "https://s3.amazonaws.com"
+    "customDomain": "https://cos.ouo.chat",
+    "endpoint": "https://cos.ap-shanghai.myqcloud.com"
   }
 }
