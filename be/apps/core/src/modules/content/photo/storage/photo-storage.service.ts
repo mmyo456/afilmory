@@ -4,31 +4,52 @@ import type {
   B2Config,
   GitHubConfig,
   LocalStorageProviderName,
-  S3Config,
+  ManagedStorageConfig,
+  RemoteStorageConfig,
+  S3CompatibleConfig,
 } from '@afilmory/builder/storage/interfaces.js'
 import { BizException, ErrorCode } from 'core/errors'
+import {
+  normalizeStringToUndefined,
+  parseBoolean,
+  parseNumber,
+  requireStringWithMessage,
+} from 'core/helpers/normalize.helper'
 import { BuilderConfigService } from 'core/modules/configuration/builder-config/builder-config.service'
 import { SettingService } from 'core/modules/configuration/setting/setting.service'
 import type { BuilderStorageProvider } from 'core/modules/configuration/setting/storage-provider.utils'
+import { SystemSettingService } from 'core/modules/configuration/system-setting/system-setting.service'
+import { StoragePlanService } from 'core/modules/platform/billing/storage-plan.service'
 import { injectable } from 'tsyringe'
 
+import { parseRetryMode } from './storage-config-parser.utils'
 
 type ResolveOverrides = {
   builderConfig?: BuilderConfig
   storageConfig?: StorageConfig
 }
 
+const MANAGED_ACTIVE_PROVIDER_ID = 'managed'
+
 @injectable()
 export class PhotoStorageService {
   constructor(
     private readonly settingService: SettingService,
     private readonly builderConfigService: BuilderConfigService,
+    private readonly systemSettingService: SystemSettingService,
+    private readonly storagePlanService: StoragePlanService,
   ) {}
 
   async resolveConfigForTenant(
     tenantId: string,
     overrides: ResolveOverrides = {},
   ): Promise<{ builderConfig: BuilderConfig; storageConfig: StorageConfig }> {
+    const activeProviderIdRaw = await this.settingService.get('builder.storage.activeProvider', { tenantId })
+    const activeProviderId =
+      typeof activeProviderIdRaw === 'string' && activeProviderIdRaw.trim().length > 0
+        ? activeProviderIdRaw.trim()
+        : null
+
     if (overrides.builderConfig) {
       const storageConfig = overrides.storageConfig ?? overrides.builderConfig.user?.storage
       if (!storageConfig) {
@@ -40,6 +61,16 @@ export class PhotoStorageService {
     }
 
     const activeProvider = await this.settingService.getActiveStorageProvider({ tenantId })
+    if (activeProviderId === MANAGED_ACTIVE_PROVIDER_ID) {
+      const managedConfig = await this.tryResolveManagedStorageConfig(tenantId)
+      if (managedConfig) {
+        const builderConfig = await this.builderConfigService.getConfigForTenant(tenantId)
+        const userSettings = this.ensureUserSettings(builderConfig)
+        userSettings.storage = managedConfig
+        return { builderConfig, storageConfig: managedConfig }
+      }
+    }
+
     if (!activeProvider) {
       throw new BizException(ErrorCode.COMMON_BAD_REQUEST, {
         message: 'Active storage provider is not configured. Configure storage settings before running sync.',
@@ -54,61 +85,97 @@ export class PhotoStorageService {
     return { builderConfig, storageConfig }
   }
 
-  private mapProviderToStorageConfig(provider: BuilderStorageProvider): StorageConfig {
+  private async tryResolveManagedStorageConfig(tenantId: string): Promise<ManagedStorageConfig | null> {
+    const [plan, provider] = await Promise.all([
+      this.storagePlanService.getPlanSummaryForTenant(tenantId),
+      this.systemSettingService.getManagedStorageProvider(),
+    ])
+
+    if (!plan) {
+      return null
+    }
+
+    if (!provider) {
+      throw new BizException(ErrorCode.COMMON_BAD_REQUEST, {
+        message: '托管存储尚未启用或未配置 Provider。',
+      })
+    }
+
+    const upstream = this.mapProviderToStorageConfig(provider) as RemoteStorageConfig
+
+    return {
+      provider: 'managed',
+      providerKey: provider.id,
+      tenantId,
+      upstream,
+      basePrefix: null,
+    }
+  }
+
+  mapProviderToStorageConfig(provider: BuilderStorageProvider): StorageConfig {
     this.assertProviderSupported(provider.type)
 
     const config = provider.config ?? {}
     switch (provider.type) {
-      case 's3': {
-        const bucket = this.requireString(config.bucket, 'Active S3 storage provider is missing `bucket`.')
-        const result: S3Config = {
-          provider: 's3',
+      case 's3':
+      case 'oss':
+      case 'cos': {
+        const providerLabel = provider.type.toUpperCase()
+        const bucket = requireStringWithMessage(
+          config.bucket,
+          `Active ${providerLabel} storage provider is missing \`bucket\`.`,
+        )
+        const result: S3CompatibleConfig = {
+          provider: provider.type as S3CompatibleConfig['provider'],
           bucket,
         }
 
-        const region = this.normalizeString(config.region)
+        const region = normalizeStringToUndefined(config.region)
         if (region) result.region = region
-        const endpoint = this.normalizeString(config.endpoint)
+        const endpoint = normalizeStringToUndefined(config.endpoint)
         if (endpoint) result.endpoint = endpoint
-        const accessKeyId = this.normalizeString(config.accessKeyId)
+        const accessKeyId = normalizeStringToUndefined(config.accessKeyId)
         if (accessKeyId) result.accessKeyId = accessKeyId
-        const secretAccessKey = this.normalizeString(config.secretAccessKey)
+        const secretAccessKey = normalizeStringToUndefined(config.secretAccessKey)
         if (secretAccessKey) result.secretAccessKey = secretAccessKey
-        const prefix = this.normalizeString(config.prefix)
+
+        const prefix = normalizeStringToUndefined(config.prefix)
         if (prefix) result.prefix = prefix
-        const customDomain = this.normalizeString(config.customDomain)
+        const customDomain = normalizeStringToUndefined(config.customDomain)
         if (customDomain) result.customDomain = customDomain
-        const excludeRegex = this.normalizeString(config.excludeRegex)
+        const excludeRegex = normalizeStringToUndefined(config.excludeRegex)
         if (excludeRegex) result.excludeRegex = excludeRegex
 
-        const maxFileLimit = this.parseNumber(config.maxFileLimit)
+        const maxFileLimit = parseNumber(config.maxFileLimit)
         if (typeof maxFileLimit === 'number') result.maxFileLimit = maxFileLimit
-        const keepAlive = this.parseBoolean(config.keepAlive)
+        const keepAlive = parseBoolean(config.keepAlive)
         if (typeof keepAlive === 'boolean') result.keepAlive = keepAlive
-        const maxSockets = this.parseNumber(config.maxSockets)
+        const maxSockets = parseNumber(config.maxSockets)
         if (typeof maxSockets === 'number') result.maxSockets = maxSockets
-        const connectionTimeoutMs = this.parseNumber(config.connectionTimeoutMs)
+        const connectionTimeoutMs = parseNumber(config.connectionTimeoutMs)
         if (typeof connectionTimeoutMs === 'number') result.connectionTimeoutMs = connectionTimeoutMs
-        const socketTimeoutMs = this.parseNumber(config.socketTimeoutMs)
+        const socketTimeoutMs = parseNumber(config.socketTimeoutMs)
         if (typeof socketTimeoutMs === 'number') result.socketTimeoutMs = socketTimeoutMs
-        const requestTimeoutMs = this.parseNumber(config.requestTimeoutMs)
+        const requestTimeoutMs = parseNumber(config.requestTimeoutMs)
         if (typeof requestTimeoutMs === 'number') result.requestTimeoutMs = requestTimeoutMs
-        const idleTimeoutMs = this.parseNumber(config.idleTimeoutMs)
+        const idleTimeoutMs = parseNumber(config.idleTimeoutMs)
         if (typeof idleTimeoutMs === 'number') result.idleTimeoutMs = idleTimeoutMs
-        const totalTimeoutMs = this.parseNumber(config.totalTimeoutMs)
+        const totalTimeoutMs = parseNumber(config.totalTimeoutMs)
         if (typeof totalTimeoutMs === 'number') result.totalTimeoutMs = totalTimeoutMs
-        const retryMode = this.parseRetryMode(config.retryMode)
+        const retryMode = parseRetryMode(config.retryMode)
         if (retryMode) result.retryMode = retryMode
-        const maxAttempts = this.parseNumber(config.maxAttempts)
+        const maxAttempts = parseNumber(config.maxAttempts)
         if (typeof maxAttempts === 'number') result.maxAttempts = maxAttempts
-        const downloadConcurrency = this.parseNumber(config.downloadConcurrency)
+        const downloadConcurrency = parseNumber(config.downloadConcurrency)
         if (typeof downloadConcurrency === 'number') result.downloadConcurrency = downloadConcurrency
+        const sigV4Service = normalizeStringToUndefined(config.sigV4Service)
+        if (sigV4Service) result.sigV4Service = sigV4Service
 
         return result
       }
       case 'github': {
-        const owner = this.requireString(config.owner, 'Active GitHub storage provider is missing `owner`.')
-        const repo = this.requireString(config.repo, 'Active GitHub storage provider is missing `repo`.')
+        const owner = requireStringWithMessage(config.owner, 'Active GitHub storage provider is missing `owner`.')
+        const repo = requireStringWithMessage(config.repo, 'Active GitHub storage provider is missing `repo`.')
 
         const result: GitHubConfig = {
           provider: 'github',
@@ -116,29 +183,34 @@ export class PhotoStorageService {
           repo,
         }
 
-        const branch = this.normalizeString(config.branch)
+        const branch = normalizeStringToUndefined(config.branch)
         if (branch) result.branch = branch
-        const token = this.normalizeString(config.token)
+        const token = normalizeStringToUndefined(config.token)
         if (token) result.token = token
-        const pathValue = this.normalizeString(config.path)
+        const pathValue = normalizeStringToUndefined(config.path)
         if (pathValue) result.path = pathValue
-        const useRawUrl = this.parseBoolean(config.useRawUrl)
+        const useRawUrl = parseBoolean(config.useRawUrl)
         if (typeof useRawUrl === 'boolean') result.useRawUrl = useRawUrl
+        const customDomain = normalizeStringToUndefined(config.customDomain)
+        if (customDomain) result.customDomain = customDomain
 
         return result
       }
       case 'b2': {
-        const applicationKeyId = this.requireString(
+        const applicationKeyId = requireStringWithMessage(
           config.applicationKeyId,
           'Active B2 storage provider is missing `applicationKeyId`.',
         )
-        const applicationKey = this.requireString(
+        const applicationKey = requireStringWithMessage(
           config.applicationKey,
           'Active B2 storage provider is missing `applicationKey`.',
         )
-        const bucketId = this.requireString(config.bucketId, 'Active B2 storage provider is missing `bucketId`.')
+        const bucketId = requireStringWithMessage(config.bucketId, 'Active B2 storage provider is missing `bucketId`.')
 
-        const bucketName = this.requireString(config.bucketName, 'Active B2 storage provider is missing `bucketName`.')
+        const bucketName = requireStringWithMessage(
+          config.bucketName,
+          'Active B2 storage provider is missing `bucketName`.',
+        )
 
         const result: B2Config = {
           provider: 'b2',
@@ -147,18 +219,18 @@ export class PhotoStorageService {
           bucketId,
           bucketName,
         }
-        const prefix = this.normalizeString(config.prefix)
+        const prefix = normalizeStringToUndefined(config.prefix)
         if (prefix) result.prefix = prefix
-        const customDomain = this.normalizeString(config.customDomain)
+        const customDomain = normalizeStringToUndefined(config.customDomain)
         if (customDomain) result.customDomain = customDomain
-        const excludeRegex = this.normalizeString(config.excludeRegex)
+        const excludeRegex = normalizeStringToUndefined(config.excludeRegex)
         if (excludeRegex) result.excludeRegex = excludeRegex
 
-        const maxFileLimit = this.parseNumber(config.maxFileLimit)
+        const maxFileLimit = parseNumber(config.maxFileLimit)
         if (typeof maxFileLimit === 'number') result.maxFileLimit = maxFileLimit
-        const authorizationTtlMs = this.parseNumber(config.authorizationTtlMs)
+        const authorizationTtlMs = parseNumber(config.authorizationTtlMs)
         if (typeof authorizationTtlMs === 'number') result.authorizationTtlMs = authorizationTtlMs
-        const uploadUrlTtlMs = this.parseNumber(config.uploadUrlTtlMs)
+        const uploadUrlTtlMs = parseNumber(config.uploadUrlTtlMs)
         if (typeof uploadUrlTtlMs === 'number') result.uploadUrlTtlMs = uploadUrlTtlMs
 
         return result
@@ -178,62 +250,6 @@ export class PhotoStorageService {
         message: `云端服务不支持 ${label} 存储提供商`,
       })
     }
-  }
-
-  private normalizeString(value?: string | null): string | undefined {
-    if (typeof value !== 'string') {
-      return undefined
-    }
-
-    const normalized = value.trim()
-    return normalized.length > 0 ? normalized : undefined
-  }
-
-  private parseNumber(value?: string | null): number | undefined {
-    const normalized = this.normalizeString(value)
-    if (!normalized) {
-      return undefined
-    }
-
-    const parsed = Number(normalized)
-    return Number.isFinite(parsed) ? parsed : undefined
-  }
-
-  private parseBoolean(value?: string | null): boolean | undefined {
-    const normalized = this.normalizeString(value)
-    if (!normalized) {
-      return undefined
-    }
-
-    const lowered = normalized.toLowerCase()
-    if (['true', '1', 'yes', 'y', 'on'].includes(lowered)) {
-      return true
-    }
-    if (['false', '0', 'no', 'n', 'off'].includes(lowered)) {
-      return false
-    }
-    return undefined
-  }
-
-  private parseRetryMode(value?: string | null): S3Config['retryMode'] | undefined {
-    const normalized = this.normalizeString(value)
-    if (!normalized) {
-      return undefined
-    }
-
-    if (normalized === 'standard' || normalized === 'adaptive' || normalized === 'legacy') {
-      return normalized
-    }
-
-    return undefined
-  }
-
-  private requireString(value: string | undefined | null, message: string): string {
-    const normalized = this.normalizeString(value)
-    if (!normalized) {
-      throw new BizException(ErrorCode.COMMON_BAD_REQUEST, { message })
-    }
-    return normalized
   }
 
   private ensureUserSettings(config: BuilderConfig): NonNullable<BuilderConfig['user']> {

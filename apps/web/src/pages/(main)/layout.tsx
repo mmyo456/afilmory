@@ -1,4 +1,3 @@
-import { photoLoader } from '@afilmory/data'
 import { ScrollArea, ScrollElementContext } from '@afilmory/ui'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { useEffect, useRef } from 'react'
@@ -8,7 +7,7 @@ import { gallerySettingAtom } from '~/atoms/app'
 import { siteConfig } from '~/config'
 import { useMobile } from '~/hooks/useMobile'
 import { getFilteredPhotos, usePhotos, usePhotoViewer } from '~/hooks/usePhotoViewer'
-import { MasonryRoot } from '~/modules/gallery/MasonryRoot'
+import { PhotosRoot } from '~/modules/gallery/PhotosRoot'
 import { PhotosProvider } from '~/providers/photos-provider'
 
 export const Component = () => {
@@ -39,11 +38,11 @@ export const Component = () => {
 
         {isMobile ? (
           <ScrollElementContext value={document.body}>
-            <MasonryRoot />
+            <PhotosRoot />
           </ScrollElementContext>
         ) : (
-          <ScrollArea rootClassName={'h-svh w-full'} viewportClassName="size-full">
-            <MasonryRoot />
+          <ScrollArea rootClassName={'h-svh w-full'} viewportClassName="size-full" scrollbarClassName="mt-12">
+            <PhotosRoot />
           </ScrollArea>
         )}
 
@@ -67,13 +66,6 @@ const useStateRestoreFromUrl = () => {
     triggerOnceRef.current = true
     isRestored = true
 
-    if (photoId) {
-      const photo = photoLoader.getPhotos().find((photo) => photo.id === photoId)
-      if (photo) {
-        openViewer(photoLoader.getPhotos().indexOf(photo))
-      }
-    }
-
     const tagsFromSearchParams = searchParams.get('tags')?.split(',')
     const camerasFromSearchParams = searchParams.get('cameras')?.split(',')
     const lensesFromSearchParams = searchParams.get('lenses')?.split(',')
@@ -95,6 +87,15 @@ const useStateRestoreFromUrl = () => {
         selectedRatings: ratingsFromSearchParams ?? prev.selectedRatings,
         tagFilterMode: tagModeFromSearchParams || prev.tagFilterMode,
       }))
+    }
+
+    if (photoId) {
+      const filteredPhotos = getFilteredPhotos()
+      const targetIndex = filteredPhotos.findIndex((photo) => photo.id === photoId)
+
+      if (targetIndex !== -1) {
+        openViewer(targetIndex)
+      }
     }
   }, [openViewer, photoId, searchParams, setGallerySetting])
 }

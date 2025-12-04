@@ -4,9 +4,9 @@ import { authAccounts, authSessions, authUsers, authVerifications, creemSubscrip
 import { env } from '@afilmory/env'
 import type { OnModuleInit } from '@afilmory/framework'
 import { createLogger, HttpContext } from '@afilmory/framework'
+import type { FlatSubscriptionEvent } from '@creem_io/better-auth'
 import { creem } from '@creem_io/better-auth'
 import { betterAuth } from 'better-auth'
-import { drizzleAdapter } from 'better-auth/adapters/drizzle'
 import { APIError, createAuthMiddleware } from 'better-auth/api'
 import { admin } from 'better-auth/plugins'
 import { DrizzleProvider } from 'core/database/database.provider'
@@ -15,14 +15,15 @@ import { SystemSettingService } from 'core/modules/configuration/system-setting/
 import { BILLING_PLAN_IDS } from 'core/modules/platform/billing/billing-plan.constants'
 import { BillingPlanService } from 'core/modules/platform/billing/billing-plan.service'
 import type { BillingPlanId } from 'core/modules/platform/billing/billing-plan.types'
+import { StoragePlanService } from 'core/modules/platform/billing/storage-plan.service'
 import type { Context } from 'hono'
 import { injectable } from 'tsyringe'
 
-import { PLACEHOLDER_TENANT_SLUG } from '../tenant/tenant.constants'
 import { TenantService } from '../tenant/tenant.service'
 import { extractTenantSlugFromHost } from '../tenant/tenant-host.utils'
 import type { AuthModuleOptions, SocialProviderOptions, SocialProvidersConfig } from './auth.config'
 import { AuthConfig } from './auth.config'
+import { tenantAwareDrizzleAdapter } from './tenant-aware-adapter'
 
 export type BetterAuthInstance = ReturnType<typeof betterAuth>
 
@@ -30,15 +31,13 @@ const logger = createLogger('Auth')
 
 @injectable()
 export class AuthProvider implements OnModuleInit {
-  private instances = new Map<string, Promise<BetterAuthInstance>>()
-  private placeholderTenantId: string | null = null
-
   constructor(
     private readonly config: AuthConfig,
     private readonly drizzleProvider: DrizzleProvider,
     private readonly systemSettings: SystemSettingService,
     private readonly tenantService: TenantService,
     private readonly billingPlanService: BillingPlanService,
+    private readonly storagePlanService: StoragePlanService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -65,31 +64,20 @@ export class AuthProvider implements OnModuleInit {
     }
   }
 
-  private buildCookiePrefix(tenantSlug: string | null): string {
+  private async resolveTenantIdOrProvision(tenantSlug: string | null): Promise<string | null> {
+    const tenantIdFromContext = this.resolveTenantIdFromContext()
+    if (tenantIdFromContext) {
+      return tenantIdFromContext
+    }
     if (!tenantSlug) {
-      return 'better-auth'
+      return null
     }
 
-    const sanitizedSlug = tenantSlug
-      .trim()
-      .toLowerCase()
-      .replaceAll(/[^a-z0-9_-]/g, '-')
-      .replaceAll(/-+/g, '-')
-      .replaceAll(/^-|-$/g, '')
-
-    return sanitizedSlug ? `better-auth-${sanitizedSlug}` : 'better-auth'
-  }
-
-  private async resolveFallbackTenantId(): Promise<string | null> {
-    if (this.placeholderTenantId) {
-      return this.placeholderTenantId
-    }
     try {
-      const placeholder = await this.tenantService.ensurePlaceholderTenant()
-      this.placeholderTenantId = placeholder.tenant.id
-      return this.placeholderTenantId
+      const aggregate = await this.tenantService.ensurePendingTenant(tenantSlug)
+      return aggregate.tenant.id
     } catch (error) {
-      logger.error('Failed to ensure placeholder tenant', error)
+      logger.error(`Failed to provision tenant for slug=${tenantSlug}`, error)
       return null
     }
   }
@@ -114,37 +102,7 @@ export class AuthProvider implements OnModuleInit {
     }
   }
 
-  private determineProtocol(host: string, provided: string | null): string {
-    if (provided && (provided === 'http' || provided === 'https')) {
-      return provided
-    }
-    if (host.includes('localhost') || host.startsWith('127.') || host.startsWith('0.0.0.0')) {
-      return 'http'
-    }
-    return 'https'
-  }
-
-  private applyTenantSlugToHost(host: string, fallbackHost: string, tenantSlug: string | null): string {
-    if (!tenantSlug) {
-      return host
-    }
-
-    const [hostName, hostPort] = host.split(':') as [string, string?]
-    if (hostName.startsWith(`${tenantSlug}.`)) {
-      return host
-    }
-
-    const [fallbackName, fallbackPort] = fallbackHost.split(':') as [string, string?]
-    if (hostName !== fallbackName) {
-      return host
-    }
-
-    const portSegment = hostPort ?? fallbackPort
-    return portSegment ? `${tenantSlug}.${fallbackName}:${portSegment}` : `${tenantSlug}.${fallbackName}`
-  }
-
   private buildBetterAuthProvidersForHost(
-    tenantSlug: string | null,
     providers: SocialProvidersConfig,
     oauthGatewayUrl: string | null,
   ): Record<string, { clientId: string; clientSecret: string; redirectUri?: string }> {
@@ -154,7 +112,7 @@ export class AuthProvider implements OnModuleInit {
 
     return entries.reduce<Record<string, { clientId: string; clientSecret: string; redirectURI?: string }>>(
       (acc, [key, value]) => {
-        const redirectUri = this.buildRedirectUri(tenantSlug, key, oauthGatewayUrl)
+        const redirectUri = this.buildRedirectUri(key, oauthGatewayUrl)
         acc[key] = {
           clientId: value.clientId,
           clientSecret: value.clientSecret,
@@ -166,15 +124,11 @@ export class AuthProvider implements OnModuleInit {
     )
   }
 
-  private buildRedirectUri(
-    tenantSlug: string | null,
-    provider: keyof SocialProvidersConfig,
-    oauthGatewayUrl: string | null,
-  ): string | null {
+  private buildRedirectUri(provider: keyof SocialProvidersConfig, oauthGatewayUrl: string | null): string | null {
     const basePath = `/api/auth/callback/${provider}`
 
     if (oauthGatewayUrl) {
-      return this.buildGatewayRedirectUri(oauthGatewayUrl, basePath, tenantSlug)
+      return this.buildGatewayRedirectUri(oauthGatewayUrl, basePath)
     }
     logger.error(
       ['[AuthProvider] OAuth 网关地址未配置，无法为第三方登录生成回调 URL。', `provider=${String(provider)}`].join(' '),
@@ -182,14 +136,9 @@ export class AuthProvider implements OnModuleInit {
     return null
   }
 
-  private buildGatewayRedirectUri(gatewayBaseUrl: string, basePath: string, tenantSlug: string | null): string {
+  private buildGatewayRedirectUri(gatewayBaseUrl: string, basePath: string): string {
     const normalizedBase = gatewayBaseUrl.replace(/\/+$/, '')
-    const searchParams = new URLSearchParams()
-    if (tenantSlug) {
-      searchParams.set('tenantSlug', tenantSlug)
-    }
-    const query = searchParams.toString()
-    return `${normalizedBase}${basePath}${query ? `?${query}` : ''}`
+    return `${normalizedBase}${basePath}`
   }
 
   private async buildTrustedOrigins(): Promise<string[]> {
@@ -211,30 +160,44 @@ export class AuthProvider implements OnModuleInit {
     options: AuthModuleOptions,
   ): Promise<BetterAuthInstance> {
     const db = this.drizzleProvider.getDb()
-    const socialProviders = this.buildBetterAuthProvidersForHost(
-      tenantSlug,
-      options.socialProviders,
-      options.oauthGatewayUrl,
-    )
-    const cookiePrefix = this.buildCookiePrefix(tenantSlug)
+    const socialProviders = this.buildBetterAuthProvidersForHost(options.socialProviders, options.oauthGatewayUrl)
+
+    // Use tenant-aware adapter for multi-tenant user/account isolation
+    // This ensures that user lookups (by email) and account lookups (by provider)
+    // are scoped to the current tenant, allowing the same email/social account
+    // to exist as different users in different tenants
+    const ensureTenantId = async () => await this.resolveTenantIdOrProvision(tenantSlug)
 
     return betterAuth({
-      database: drizzleAdapter(db, {
-        provider: 'pg',
-        schema: {
-          user: authUsers,
-          session: authSessions,
-          account: authAccounts,
-          verification: authVerifications,
-          subscription: creemSubscriptions,
+      database: tenantAwareDrizzleAdapter(
+        db,
+        {
+          provider: 'pg',
+          schema: {
+            user: authUsers,
+            session: authSessions,
+            account: authAccounts,
+            verification: authVerifications,
+            subscription: creemSubscriptions,
+          },
         },
-      }),
+        ensureTenantId,
+      ),
       socialProviders: socialProviders as any,
       emailAndPassword: { enabled: true },
       trustedOrigins: await this.buildTrustedOrigins(),
       session: {
         freshAge: 0,
+        additionalFields: {
+          tenantId: { type: 'string', input: false },
+        },
       },
+      account: {
+        additionalFields: {
+          tenantId: { type: 'string', input: false },
+        },
+      },
+
       user: {
         additionalFields: {
           tenantId: { type: 'string', input: false },
@@ -246,27 +209,18 @@ export class AuthProvider implements OnModuleInit {
         user: {
           create: {
             before: async (user) => {
-              const tenantId = this.resolveTenantIdFromContext()
-              if (tenantId) {
-                return {
-                  data: {
-                    ...user,
-                    tenantId,
-                    role: user.role ?? 'guest',
-                  },
-                }
-              }
-
-              const fallbackTenantId = await this.resolveFallbackTenantId()
-              if (!fallbackTenantId) {
-                return { data: user }
+              const tenantId = await ensureTenantId()
+              if (!tenantId) {
+                throw new APIError('BAD_REQUEST', {
+                  message: 'Missing tenant context during account creation.',
+                })
               }
 
               return {
                 data: {
                   ...user,
-                  tenantId: fallbackTenantId,
-                  role: user.role ?? 'guest',
+                  tenantId,
+                  role: user.role ?? 'user',
                 },
               }
             },
@@ -276,7 +230,7 @@ export class AuthProvider implements OnModuleInit {
           create: {
             before: async (session) => {
               const tenantId = this.resolveTenantIdFromContext()
-              const fallbackTenantId = tenantId ?? session.tenantId ?? (await this.resolveFallbackTenantId())
+              const fallbackTenantId = tenantId ?? session.tenantId ?? (await ensureTenantId())
               return {
                 data: {
                   ...session,
@@ -290,7 +244,7 @@ export class AuthProvider implements OnModuleInit {
           create: {
             before: async (account) => {
               const tenantId = this.resolveTenantIdFromContext()
-              const resolvedTenantId = tenantId ?? (await this.resolveFallbackTenantId())
+              const resolvedTenantId = tenantId ?? (await ensureTenantId())
               if (!resolvedTenantId) {
                 return { data: account }
               }
@@ -306,7 +260,6 @@ export class AuthProvider implements OnModuleInit {
         },
       },
       advanced: {
-        cookiePrefix,
         database: {
           generateId: () => generateId(),
         },
@@ -322,11 +275,25 @@ export class AuthProvider implements OnModuleInit {
           webhookSecret: env.CREEM_WEBHOOK_SECRET,
           persistSubscriptions: true,
           testMode: env.NODE_ENV !== 'production',
-          onGrantAccess: async ({ metadata }) => {
-            await this.handleCreemGrant(metadata)
+          onCheckoutCompleted: async (data) => {
+            await this.handleCreemWebhook({
+              event: data.webhookEventType,
+              metadata: this.mergeMetadata(data.metadata, data.subscription?.metadata),
+              status: data.subscription?.status ?? null,
+              defaultGrant: true,
+            })
           },
-          onRevokeAccess: async ({ metadata }) => {
-            await this.handleCreemRevoke(metadata)
+          // onRefundCreated: async (data: FlatRefundCreated) => {
+          //   await this.handleCreemRefundCreated(data)
+          // },
+          onSubscriptionCanceled: async (data) => {
+            await this.handleCreemSubscriptionEvent(data, true)
+          },
+          onSubscriptionExpired: async (data) => {
+            await this.handleCreemSubscriptionEvent(data, true)
+          },
+          onSubscriptionUpdate: async (data) => {
+            await this.handleCreemSubscriptionEvent(data, false)
           },
         }),
       ],
@@ -358,25 +325,9 @@ export class AuthProvider implements OnModuleInit {
     const fallbackHost = options.baseDomain.trim().toLowerCase()
     const requestedHost = (endpoint.host ?? fallbackHost).trim().toLowerCase()
     const tenantSlugFromContext = this.resolveTenantSlugFromContext()
-    const tenantSlug =
-      tenantSlugFromContext && tenantSlugFromContext !== PLACEHOLDER_TENANT_SLUG
-        ? tenantSlugFromContext
-        : (extractTenantSlugFromHost(requestedHost, options.baseDomain) ?? tenantSlugFromContext)
-    const host = this.applyTenantSlugToHost(requestedHost || fallbackHost, fallbackHost, tenantSlug)
-    const protocol = this.determineProtocol(host, endpoint.protocol)
-
-    const optionSignature = this.computeOptionsSignature(options)
-    const cacheKey = `${protocol}://${host}::${tenantSlug}::${optionSignature}`
-
-    if (!this.instances.has(cacheKey)) {
-      const instancePromise = this.createAuthForEndpoint(tenantSlug, options).then((instance) => {
-        logger.info(`Better Auth initialized for ${cacheKey}`)
-        return instance
-      })
-      this.instances.set(cacheKey, instancePromise)
-    }
-
-    return await this.instances.get(cacheKey)!
+    const tenantSlug = tenantSlugFromContext ?? extractTenantSlugFromHost(requestedHost, options.baseDomain)
+    const instancePromise = this.createAuthForEndpoint(tenantSlug, options)
+    return await instancePromise
   }
 
   private computeOptionsSignature(options: AuthModuleOptions): string {
@@ -402,35 +353,152 @@ export class AuthProvider implements OnModuleInit {
     return hash.digest('hex')
   }
 
-  private async handleCreemGrant(metadata?: Record<string, unknown>): Promise<void> {
-    const tenantId = this.extractMetadataValue(metadata, 'tenantId')
-    const planId = this.extractPlanIdFromMetadata(metadata)
+  private async handleCreemSubscriptionEvent(data: FlatSubscriptionEvent<string>, forceRevoke: boolean): Promise<void> {
+    await this.handleCreemWebhook({
+      event: data.webhookEventType,
+      metadata: this.mergeMetadata(data.metadata),
+      status: data.status,
+      forceRevoke,
+    })
+  }
 
-    if (!tenantId || !planId) {
-      logger.warn('[AuthProvider] Creem grant event missing tenantId or planId metadata')
+  private async handleCreemWebhook(params: {
+    event: string
+    metadata?: Record<string, unknown> | null
+    status?: string | null
+    defaultGrant?: boolean
+    forceRevoke?: boolean
+  }): Promise<void> {
+    const { event, metadata, status, defaultGrant = false, forceRevoke = false } = params
+    const tenantId = this.extractMetadataValue(metadata ?? undefined, 'tenantId')
+    const planId = this.extractPlanIdFromMetadata(metadata ?? undefined)
+    const storagePlanId = this.extractStoragePlanIdFromMetadata(metadata ?? undefined)
+
+    if (!tenantId) {
+      logger.warn(`[AuthProvider] Creem ${event} event missing tenantId metadata`)
       return
     }
 
-    try {
-      await this.billingPlanService.updateTenantPlan(tenantId, planId)
-      logger.info(`[AuthProvider] Tenant ${tenantId} upgraded to ${planId} via Creem`)
-    } catch (error) {
-      logger.error(`[AuthProvider] Failed to update tenant ${tenantId} plan from Creem grant`, error)
+    const shouldGrant = this.shouldGrantStatus(status, event, defaultGrant, forceRevoke)
+    if (shouldGrant === null) {
+      logger.warn(`[AuthProvider] Creem ${event} event for tenant ${tenantId} missing actionable status, skipping`)
+      return
+    }
+    if (shouldGrant) {
+      await this.applyPlanUpdates({ tenantId, planId, storagePlanId, event })
+      return
+    }
+
+    await this.applyRevocation({ tenantId, planId, storagePlanId, event })
+  }
+
+  private mergeMetadata(...sources: Array<Record<string, unknown> | null | undefined>): Record<string, unknown> | null {
+    const merged = sources.filter(Boolean).reduce<Record<string, unknown>>((acc, curr) => {
+      Object.assign(acc, curr as Record<string, unknown>)
+      return acc
+    }, {})
+    return Object.keys(merged).length > 0 ? merged : null
+  }
+
+  private shouldGrantStatus(
+    status: string | null | undefined,
+    event: string,
+    defaultGrant: boolean,
+    forceRevoke: boolean,
+  ): boolean | null {
+    if (forceRevoke) {
+      return false
+    }
+    const normalized = status?.toLowerCase() ?? null
+    const grantStatuses = new Set(['active', 'trialing', 'paid'])
+
+    if (event === 'checkout.completed') {
+      return true
+    }
+
+    if (normalized && grantStatuses.has(normalized)) {
+      return true
+    }
+
+    if (event === 'subscription.update') {
+      if (!normalized) {
+        return defaultGrant ? true : null
+      }
+      return grantStatuses.has(normalized)
+    }
+
+    if (!normalized && !defaultGrant) {
+      return null
+    }
+
+    return defaultGrant
+  }
+
+  private async applyPlanUpdates(params: {
+    tenantId: string
+    planId: BillingPlanId | null
+    storagePlanId: string | null
+    event: string
+  }): Promise<void> {
+    const { tenantId, planId, storagePlanId, event } = params
+    let handled = false
+
+    if (planId) {
+      handled = true
+      try {
+        await this.billingPlanService.updateTenantPlan(tenantId, planId)
+        logger.info(`[AuthProvider] Tenant ${tenantId} set to billing plan ${planId} via Creem (${event})`)
+      } catch (error) {
+        logger.error(`[AuthProvider] Failed to update tenant ${tenantId} billing plan from Creem (${event})`, error)
+      }
+    }
+
+    if (storagePlanId) {
+      handled = true
+      try {
+        await this.storagePlanService.updateTenantPlan(tenantId, storagePlanId)
+        logger.info(`[AuthProvider] Tenant ${tenantId} storage plan set to ${storagePlanId} via Creem (${event})`)
+      } catch (error) {
+        logger.error(`[AuthProvider] Failed to update tenant ${tenantId} storage plan from Creem (${event})`, error)
+      }
+    }
+
+    if (!handled) {
+      logger.warn(`[AuthProvider] Creem ${event} event for tenant ${tenantId} missing plan metadata`)
     }
   }
 
-  private async handleCreemRevoke(metadata?: Record<string, unknown>): Promise<void> {
-    const tenantId = this.extractMetadataValue(metadata, 'tenantId')
-    if (!tenantId) {
-      logger.warn('[AuthProvider] Creem revoke event missing tenantId metadata')
-      return
+  private async applyRevocation(params: {
+    tenantId: string
+    planId: BillingPlanId | null
+    storagePlanId: string | null
+    event: string
+  }): Promise<void> {
+    const { tenantId, planId, storagePlanId, event } = params
+    let handled = false
+
+    if (planId) {
+      handled = true
+      try {
+        await this.billingPlanService.updateTenantPlan(tenantId, 'free')
+        logger.info(`[AuthProvider] Tenant ${tenantId} downgraded to free via Creem (${event})`)
+      } catch (error) {
+        logger.error(`[AuthProvider] Failed to downgrade tenant ${tenantId} after Creem ${event}`, error)
+      }
     }
 
-    try {
-      await this.billingPlanService.updateTenantPlan(tenantId, 'free')
-      logger.info(`[AuthProvider] Tenant ${tenantId} downgraded to free via Creem revoke`)
-    } catch (error) {
-      logger.error(`[AuthProvider] Failed to downgrade tenant ${tenantId} after Creem revoke`, error)
+    if (storagePlanId) {
+      handled = true
+      try {
+        await this.storagePlanService.updateTenantPlan(tenantId, null)
+        logger.info(`[AuthProvider] Tenant ${tenantId} storage plan cleared via Creem (${event})`)
+      } catch (error) {
+        logger.error(`[AuthProvider] Failed to clear tenant ${tenantId} storage plan after Creem ${event}`, error)
+      }
+    }
+
+    if (!handled) {
+      logger.warn(`[AuthProvider] Creem ${event} event for tenant ${tenantId} missing plan metadata`)
     }
   }
 
@@ -443,6 +511,10 @@ export class AuthProvider implements OnModuleInit {
       return planId as BillingPlanId
     }
     return null
+  }
+
+  private extractStoragePlanIdFromMetadata(metadata?: Record<string, unknown>): string | null {
+    return this.extractMetadataValue(metadata, 'storagePlanId')
   }
 
   private extractMetadataValue(metadata: Record<string, unknown> | undefined, key: string): string | null {

@@ -1,22 +1,24 @@
 import { isTenantSlugReserved } from '@afilmory/utils'
 import { BizException, ErrorCode } from 'core/errors'
+import { normalizeString } from 'core/helpers/normalize.helper'
 import type { BillingPlanId } from 'core/modules/platform/billing/billing-plan.types'
 import { injectable } from 'tsyringe'
 
-import {
-  PLACEHOLDER_TENANT_NAME,
-  PLACEHOLDER_TENANT_SLUG,
-  ROOT_TENANT_NAME,
-  ROOT_TENANT_SLUG,
-} from './tenant.constants'
+import { PENDING_TENANT_DEFAULT_NAME, ROOT_TENANT_NAME, ROOT_TENANT_SLUG } from './tenant.constants'
 import { TenantRepository } from './tenant.repository'
-import type { TenantAggregate, TenantContext, TenantResolutionInput } from './tenant.types'
+import type { TenantAggregate, TenantContext, TenantRecord, TenantResolutionInput } from './tenant.types'
 
 @injectable()
 export class TenantService {
   constructor(private readonly repository: TenantRepository) {}
 
-  async createTenant(payload: { name: string; slug: string; planId?: BillingPlanId }): Promise<TenantAggregate> {
+  async createTenant(payload: {
+    name: string
+    slug: string
+    planId?: BillingPlanId
+    storagePlanId?: string | null
+    status?: TenantRecord['status']
+  }): Promise<TenantAggregate> {
     const normalizedSlug = this.normalizeSlug(payload.slug)
 
     if (!normalizedSlug) {
@@ -35,22 +37,6 @@ export class TenantService {
     })
   }
 
-  async ensurePlaceholderTenant(): Promise<TenantAggregate> {
-    const existing = await this.repository.findBySlug(PLACEHOLDER_TENANT_SLUG)
-    if (existing) {
-      return existing
-    }
-
-    return await this.repository.createTenant({
-      name: PLACEHOLDER_TENANT_NAME,
-      slug: PLACEHOLDER_TENANT_SLUG,
-    })
-  }
-
-  getPlaceholderTenantSlug(): string {
-    return PLACEHOLDER_TENANT_SLUG
-  }
-
   async ensureRootTenant(): Promise<TenantAggregate> {
     const existing = await this.repository.findBySlug(ROOT_TENANT_SLUG)
     if (existing) {
@@ -63,18 +49,12 @@ export class TenantService {
     })
   }
 
-  async isPlaceholderTenantId(tenantId: string | null | undefined): Promise<boolean> {
-    if (!tenantId) {
-      return false
-    }
-    const placeholder = await this.ensurePlaceholderTenant()
-    return placeholder.tenant.id === tenantId
-  }
-
-  async resolve(input: TenantResolutionInput, noThrow: boolean): Promise<TenantContext | null>
-  async resolve(input: TenantResolutionInput): Promise<TenantContext>
-  async resolve(input: TenantResolutionInput, noThrow = false): Promise<TenantContext | null> {
-    const tenantId = this.normalizeString(input.tenantId)
+  async resolve(
+    input: TenantResolutionInput,
+    options?: { noThrow?: boolean; allowPending?: boolean },
+  ): Promise<TenantContext | null> {
+    const { noThrow = false, allowPending = false } = options ?? {}
+    const tenantId = normalizeString(input.tenantId)
     const slug = this.normalizeSlug(input.slug)
 
     let aggregate: TenantAggregate | null = null
@@ -101,23 +81,23 @@ export class TenantService {
       throw new BizException(ErrorCode.TENANT_NOT_FOUND)
     }
 
-    this.ensureTenantIsActive(aggregate.tenant)
+    this.ensureTenantIsActive(aggregate.tenant, { allowPending })
 
     return {
       tenant: aggregate.tenant,
     }
   }
 
-  async getById(id: string): Promise<TenantAggregate> {
+  async getById(id: string, options?: { allowPending?: boolean }): Promise<TenantAggregate> {
     const aggregate = await this.repository.findById(id)
     if (!aggregate) {
       throw new BizException(ErrorCode.TENANT_NOT_FOUND)
     }
-    this.ensureTenantIsActive(aggregate.tenant)
+    this.ensureTenantIsActive(aggregate.tenant, { allowPending: options?.allowPending ?? false })
     return aggregate
   }
 
-  async getBySlug(slug: string): Promise<TenantAggregate> {
+  async getBySlug(slug: string, options?: { allowPending?: boolean }): Promise<TenantAggregate> {
     const normalized = this.normalizeSlug(slug)
     if (!normalized) {
       throw new BizException(ErrorCode.TENANT_NOT_FOUND)
@@ -127,7 +107,7 @@ export class TenantService {
     if (!aggregate) {
       throw new BizException(ErrorCode.TENANT_NOT_FOUND)
     }
-    this.ensureTenantIsActive(aggregate.tenant)
+    this.ensureTenantIsActive(aggregate.tenant, { allowPending: options?.allowPending ?? false })
     return aggregate
   }
 
@@ -135,8 +115,20 @@ export class TenantService {
     await this.repository.deleteById(id)
   }
 
-  async listTenants(): Promise<TenantAggregate[]> {
-    return await this.repository.listTenants()
+  async listTenants(options?: {
+    page?: number
+    limit?: number
+    status?: TenantRecord['status']
+    sortBy?: 'createdAt' | 'name'
+    sortDir?: 'asc' | 'desc'
+  }): Promise<{ items: TenantAggregate[]; total: number }> {
+    return await this.repository.listTenants({
+      page: options?.page ?? 1,
+      limit: options?.limit ?? 20,
+      status: options?.status,
+      sortBy: options?.sortBy,
+      sortDir: options?.sortDir,
+    })
   }
 
   async setBanned(id: string, banned: boolean): Promise<void> {
@@ -153,7 +145,8 @@ export class TenantService {
     return existing === null
   }
 
-  ensureTenantIsActive(tenant: TenantAggregate['tenant']): void {
+  ensureTenantIsActive(tenant: TenantAggregate['tenant'], options?: { allowPending?: boolean }): void {
+    const allowPending = options?.allowPending ?? false
     if (tenant.banned) {
       throw new BizException(ErrorCode.TENANT_BANNED)
     }
@@ -162,21 +155,46 @@ export class TenantService {
       throw new BizException(ErrorCode.TENANT_SUSPENDED)
     }
 
+    if (tenant.status === 'pending' && allowPending) {
+      return
+    }
+
     if (tenant.status !== 'active') {
       throw new BizException(ErrorCode.TENANT_INACTIVE)
     }
   }
 
-  private normalizeString(value?: string | null): string | null {
-    if (!value) {
-      return null
+  async ensurePendingTenant(slug: string): Promise<TenantAggregate> {
+    const normalized = this.normalizeSlug(slug)
+    if (!normalized) {
+      throw new BizException(ErrorCode.TENANT_NOT_FOUND, { message: 'Tenant slug is required' })
     }
-    const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : null
+
+    const existing = await this.repository.findBySlug(normalized)
+    if (existing) {
+      return existing
+    }
+
+    return await this.createTenant({
+      name: PENDING_TENANT_DEFAULT_NAME,
+      slug: normalized,
+      status: 'pending',
+    })
+  }
+
+  async isPendingTenantId(tenantId: string | null | undefined): Promise<boolean> {
+    if (!tenantId) {
+      return false
+    }
+    const aggregate = await this.repository.findById(tenantId)
+    if (!aggregate) {
+      return false
+    }
+    return aggregate.tenant.status === 'pending'
   }
 
   private normalizeSlug(value?: string | null): string | null {
-    const normalized = this.normalizeString(value)
+    const normalized = normalizeString(value)
     return normalized ? normalized.toLowerCase() : null
   }
 }

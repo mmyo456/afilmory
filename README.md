@@ -8,7 +8,25 @@ Afilmory (/əˈfɪlməri/, "uh-FIL-muh-ree") is a term created for personal phot
 
 A modern photo gallery website built with React + TypeScript, supporting automatic photo synchronization from multiple storage sources (S3, GitHub), featuring high-performance WebGL rendering, masonry layout, EXIF information display, thumbnail generation, and more.
 
-Live Photo Galleries:
+## 🚀 Get Started in Seconds
+
+**👉 [Use the Official SaaS](https://afilmory.art/) - No setup required!**
+
+The easiest way to create your photo gallery is through our hosted service at **[afilmory.art](https://afilmory.art/)**. Sign up, connect your storage, and your gallery is live in minutes—no deployment, no servers, no maintenance.
+
+### Why Use the Official SaaS?
+
+- ✅ **Zero setup** - No configuration, no deployment, no infrastructure management
+- ✅ **Live CMS** - Edit photos, titles, and metadata in real-time without rebuilding
+- ✅ **Custom domains** - Bind your own domain with DNS verification
+- ✅ **Automatic updates** - Always running the latest version with new features
+- ✅ **Managed infrastructure** - We handle scaling, backups, and maintenance
+
+[**Get Started Now →**](https://afilmory.art/)
+
+---
+
+### Live Photo Galleries
 
 - https://afilmory.innei.in
 - https://gallery.mxte.cc
@@ -77,94 +95,25 @@ Designed with adapter pattern, supporting multiple storage backends:
 - **Eagle Storage** - Using Eagle app library as image storage
 - **Local File System** - Local storage for development and testing
 
-## 🚀 Quick Start
+## 🛠️ Self-Host (Advanced)
 
-### Docker Deployment
+If you prefer to host Afilmory yourself, you can deploy it on your own infrastructure. This requires more technical knowledge and ongoing maintenance.
 
-[Docker Deployment](https://github.com/Afilmory/docker)
+> **💡 Tip**: For most users, we recommend using the [official SaaS](https://afilmory.art/) instead. Self-hosting is best suited for developers who need full control over their deployment or have specific infrastructure requirements.
 
-## ⚙️ Configuration Options
+### Option A: Docker (recommended)
 
-#### Remote Repository Configuration (`repo`)
+[Docker deployment guide](https://github.com/Afilmory/docker) ships prebuilt images with minimal setup.
 
-To achieve incremental builds in CI, it is necessary to configure a cache repository, which will pull the cache before each build and upload the build results after the build.
+### Option B: Manual install
 
-```json
-{
-  "repo": {
-    "enable": true,
-    "url": "https://github.com/username/gallery-assets"
-  }
-}
-```
+1. Copy `config.example.json` to `config.json` and fill in your site name, description, and social links.
+2. Prepare access to your photo storage (S3/B2/GitHub/local). The builder will read photos and generate thumbnails plus `photos-manifest.json`.
+3. Run the builder to generate assets, then start the site.
 
-This will automatically pull resources from the remote repository, avoiding rebuilds each time.
+Looking for developer commands, environment variables, and builder config details? See `DEVELOPMENT.md`.
 
-**In order to achieve uploading to the git repository, you need to provide a `GIT_TOKEN` and write it in the `.env` file.**
-
-#### Storage Configuration (`storage`)
-
-- `provider`: Storage provider (`s3` | `github`)
-- `bucket`: S3 bucket name
-- `region`: S3 region
-- `endpoint`: S3 endpoint (optional)
-- `prefix`: File prefix
-- `customDomain`: Custom domain
-- `excludeRegex`: Regular expression to exclude files (optional)
-
-#### System Processing (`system.processing`)
-
-- `defaultConcurrency`: Default concurrency
-- `digestSuffixLength`: The length of the SHA-256 digest appended to the photo ID
-- `enableLivePhotoDetection`: Enable Live Photo detection
-- `supportedFormats`: Optional allowlist of file extensions to process
-
-#### System Observability (`system.observability`)
-
-- `showProgress`: Show build progress
-- `showDetailedStats`: Show detailed statistics
-- `logging.verbose`: Verbose logging
-- `logging.level`: Log level (`info` | `warn` | `error` | `debug`)
-- `logging.outputToFile`: Output to file
-- `performance.worker.workerCount`: Number of worker processes
-- `performance.worker.timeout`: Worker timeout (milliseconds)
-- `performance.worker.useClusterMode`: Enable cluster mode
-
-## 📋 CLI Commands
-
-### Build Commands
-
-```bash
-# View help
-pnpm run build:manifest -- --help
-
-# Incremental update (default)
-pnpm run build:manifest
-
-# Force full update
-pnpm run build:manifest -- --force
-
-# Only regenerate thumbnails
-pnpm run build:manifest -- --force-thumbnails
-
-# Only regenerate manifest
-pnpm run build:manifest -- --force-manifest
-```
-
-### Development Commands
-
-```bash
-# Start development server
-pnpm dev
-
-# Build production version
-pnpm build
-```
-
-### Notes
-
-- Ensure your S3 bucket already contains photo files
-- If using remote repository, configure `builder.config.ts` first
+For detailed self-hosting instructions, see the [Documentation](https://docs.afilmory.art).
 
 ## 🔧 Advanced Usage
 
@@ -203,9 +152,17 @@ export async function customImageProcessor(buffer: Buffer) {
 
 Attribution Network License (ANL) v1.0 © 2025 Afilmory Team. See [LICENSE](LICENSE) for more details.
 
+## 📚 Documentation
+
+- **[Official Documentation](https://docs.afilmory.art/)** - Complete guides, API reference, and tutorials
+- **[Quick Start Guide](https://docs.afilmory.art/getting-started/quick-start)** - Get your gallery running in 5 minutes
+- **[SaaS Mode](https://docs.afilmory.art/saas)** - Learn about hosted galleries and multi-tenant features
+- **[Storage Providers](https://docs.afilmory.art/storage/providers)** - Setup guides for S3, GitHub, B2, and more
+- **[Deployment Guides](https://docs.afilmory.art/deployment)** - Deploy to Vercel, Cloudflare Pages, Docker, and more
+
 ## 🔗 Related Links
 
-- [Live Demo](https://gallery.innei.in)
+- [Official SaaS](https://afilmory.art/) 
 - [Personal Website](https://innei.in)
 - [GitHub](https://github.com/innei)
 

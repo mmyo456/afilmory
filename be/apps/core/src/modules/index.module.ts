@@ -17,17 +17,21 @@ import { SettingModule } from './configuration/setting/setting.module'
 import { SiteSettingModule } from './configuration/site-setting/site-setting.module'
 import { StorageSettingModule } from './configuration/storage-setting/storage-setting.module'
 import { SystemSettingModule } from './configuration/system-setting/system-setting.module'
+import { CommentModule } from './content/comment/comment.module'
 import { FeedModule } from './content/feed/feed.module'
 import { OgModule } from './content/og/og.module'
 import { PhotoModule } from './content/photo/photo.module'
 import { ReactionModule } from './content/reaction/reaction.module'
 import { CacheModule } from './infrastructure/cache/cache.module'
 import { DataSyncModule } from './infrastructure/data-sync/data-sync.module'
+import { HealthModule } from './infrastructure/health/health.module'
 import { StaticWebModule } from './infrastructure/static-web/static-web.module'
+import { MailModule } from './mail/mail.module'
 import { AuthModule } from './platform/auth/auth.module'
 import { BillingModule } from './platform/billing/billing.module'
 import { DashboardModule } from './platform/dashboard/dashboard.module'
 import { DataManagementModule } from './platform/data-management/data-management.module'
+import { FeaturedGalleriesModule } from './platform/featured-galleries/featured-galleries.module'
 import { SuperAdminModule } from './platform/super-admin/super-admin.module'
 import { TenantModule } from './platform/tenant/tenant.module'
 
@@ -46,8 +50,10 @@ function createEventModuleOptions(redis: RedisAccessor) {
       inject: [RedisAccessor],
     }),
     RedisModule,
+    MailModule,
     AuthModule,
     CacheModule,
+    HealthModule,
     SettingModule,
     BuilderSettingModule,
     StorageSettingModule,
@@ -55,11 +61,13 @@ function createEventModuleOptions(redis: RedisAccessor) {
     SystemSettingModule,
     SuperAdminModule,
     PhotoModule,
+    CommentModule,
     ReactionModule,
     DashboardModule,
     BillingModule,
     DataManagementModule,
     TenantModule,
+    FeaturedGalleriesModule,
     DataSyncModule,
     FeedModule,
     OgModule,

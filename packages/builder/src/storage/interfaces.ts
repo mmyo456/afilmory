@@ -16,8 +16,25 @@ export interface StorageObject {
   etag?: string
 }
 
+export type StorageUploadStatus = 'start' | 'progress' | 'complete' | 'error'
+
+export type StorageUploadProgress = {
+  key: string
+  status: StorageUploadStatus
+  provider?: StorageConfig['provider']
+  size?: number
+  bytesUploaded?: number
+  totalBytes?: number
+  elapsedMs?: number
+  error?: unknown
+  metadata?: Record<string, unknown> | null
+}
+
+export type StorageUploadProgressHandler = (progress: StorageUploadProgress) => Promise<void> | void
+
 export interface StorageUploadOptions {
   contentType?: string
+  onProgress?: StorageUploadProgressHandler
 }
 
 // 存储提供商的通用接口
@@ -63,6 +80,12 @@ export interface StorageProvider {
   deleteFile: (key: string) => Promise<void>
 
   /**
+   * 删除指定前缀下的所有文件（通常对应一个“目录”）
+   * @param prefix 需要删除的目录或前缀（不需要以 / 开头）
+   */
+  deleteFolder: (prefix: string) => Promise<void>
+
+  /**
    * 向存储上传文件
    * @param key 文件的键值/路径
    * @param data 文件数据
@@ -79,8 +102,7 @@ export interface StorageProvider {
   moveFile: (sourceKey: string, targetKey: string, options?: StorageUploadOptions) => Promise<StorageObject>
 }
 
-export type S3Config = {
-  provider: 's3'
+type BaseS3LikeConfig = {
   bucket?: string
   region?: string
   endpoint?: string
@@ -103,7 +125,28 @@ export type S3Config = {
   maxAttempts?: number
   // Download concurrency limiter within a single process/worker
   downloadConcurrency?: number
+  /**
+   * Optional override for the SigV4 service name. Defaults to:
+   * - `s3` for AWS or generic S3-compatible endpoints
+   * - `oss` for Aliyun OSS
+   * - `s3` for Tencent COS
+   */
+  sigV4Service?: string
 }
+
+export type S3Config = BaseS3LikeConfig & {
+  provider: 's3'
+}
+
+export type OSSConfig = BaseS3LikeConfig & {
+  provider: 'oss'
+}
+
+export type COSConfig = BaseS3LikeConfig & {
+  provider: 'cos'
+}
+
+export type S3CompatibleConfig = S3Config | OSSConfig | COSConfig
 
 export type B2Config = {
   provider: 'b2'
@@ -127,6 +170,14 @@ export type GitHubConfig = {
   token?: string
   path?: string
   useRawUrl?: boolean
+  /**
+   * Optional custom CDN domain for generated URLs.
+   * When set, URLs will use this domain instead of raw.githubusercontent.com.
+   * Useful for jsDelivr, Cloudflare CDN, or other GitHub CDN proxies.
+   * @example 'cdn.jsdelivr.net/gh/owner/repo@branch'
+   * @example 'cdn.example.com'
+   */
+  customDomain?: string
 }
 
 export type LocalConfig = {
@@ -215,15 +266,23 @@ export interface CustomStorageConfig {
   [key: string]: unknown
 }
 
-export type StorageConfig = S3Config | B2Config | GitHubConfig | EagleConfig | LocalConfig | CustomStorageConfig
+export type RemoteStorageProviderName = 's3' | 'oss' | 'cos' | 'b2' | 'github'
+export type LocalStorageProviderName = 'eagle' | 'local'
 
-export const REMOTE_STORAGE_PROVIDERS = ['s3', 'b2', 'github'] as const
-export const LOCAL_STORAGE_PROVIDERS = ['eagle', 'local'] as const
+export const REMOTE_STORAGE_PROVIDERS: readonly RemoteStorageProviderName[] = ['s3', 'oss', 'cos', 'b2', 'github']
+export const LOCAL_STORAGE_PROVIDERS: readonly LocalStorageProviderName[] = ['eagle', 'local']
 
-export type RemoteStorageProviderName = (typeof REMOTE_STORAGE_PROVIDERS)[number]
-export type LocalStorageProviderName = (typeof LOCAL_STORAGE_PROVIDERS)[number]
+export type RemoteStorageConfig = S3CompatibleConfig | B2Config | GitHubConfig
+export type LocalStorageConfig = EagleConfig | LocalConfig
+
+export type ManagedStorageConfig = {
+  provider: 'managed'
+  tenantId: string
+  providerKey?: string | null
+  basePrefix?: string | null
+  upstream: RemoteStorageConfig
+}
+
+export type StorageConfig = RemoteStorageConfig | LocalStorageConfig | ManagedStorageConfig | CustomStorageConfig
 
 export type StorageProviderCategory = 'remote' | 'local'
-
-export type RemoteStorageConfig = Extract<StorageConfig, { provider: RemoteStorageProviderName }>
-export type LocalStorageConfig = Extract<StorageConfig, { provider: LocalStorageProviderName }>
