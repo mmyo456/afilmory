@@ -5,13 +5,13 @@
   "url": "https://gallery.ouo.chat",
   "accentColor": "#F8E8B8",
   "author": {
-    "name": "鸭鸭",
+    "name": "Innei",
     "url": "https://ouo.chat",
     "avatar": "https://api.ouo.chat/api/v2/objects/avatar/44wrhytvi0otf9e5ej.png"
   },
   "social": {
-    "twitter": "@mmyo456",
-    "github": "mmyo456"
+    "github": "mmyo456",
+    "twitter": "@mmyo456"
   },
   "feed": {
     "folo": {
@@ -20,5 +20,10 @@
         "userId": "41312624216137728"
       }
     }
-  }
+  },
+  "map": [
+    "maplibre"
+  ],
+  "mapStyle": "builtin",
+  "mapProjection": "mercator"
 }
