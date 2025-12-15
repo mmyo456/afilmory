@@ -13,10 +13,12 @@ import type {
   UpdateSuperAdminSettingsPayload,
   UpdateTenantBanPayload,
   UpdateTenantPlanPayload,
+  UpdateTenantStoragePlanPayload,
 } from './types'
 
 const SUPER_ADMIN_SETTINGS_ENDPOINT = '/super-admin/settings'
 const SUPER_ADMIN_TENANTS_ENDPOINT = '/super-admin/tenants'
+const SUPER_ADMIN_STORAGE_TENANTS_ENDPOINT = '/super-admin/tenants/storage'
 const STABLE_NEWLINE = /\r?\n/
 
 type RunBuilderDebugOptions = {
@@ -47,6 +49,7 @@ export async function fetchSuperAdminTenants(
   if (params) {
     if (params.page) query.set('page', String(params.page))
     if (params.limit) query.set('limit', String(params.limit))
+    if (params.search) query.set('search', params.search)
     if (params.status) query.set('status', params.status)
     if (params.sortBy) query.set('sortBy', params.sortBy)
     if (params.sortDir) query.set('sortDir', params.sortDir)
@@ -61,6 +64,30 @@ export async function fetchSuperAdminTenants(
   return camelCaseKeys<SuperAdminTenantListResponse>(response)
 }
 
+export async function fetchSuperAdminStorageTenants(
+  params?: SuperAdminTenantListParams,
+): Promise<SuperAdminTenantListResponse> {
+  const query = new URLSearchParams()
+  if (params) {
+    if (params.page) query.set('page', String(params.page))
+    if (params.limit) query.set('limit', String(params.limit))
+    if (params.search) query.set('search', params.search)
+    if (params.sortBy) query.set('sortBy', params.sortBy)
+    if (params.sortDir) query.set('sortDir', params.sortDir)
+  }
+
+  const queryString = query.toString()
+  const url = queryString
+    ? `${SUPER_ADMIN_STORAGE_TENANTS_ENDPOINT}?${queryString}`
+    : SUPER_ADMIN_STORAGE_TENANTS_ENDPOINT
+
+  const response = await coreApi<SuperAdminTenantListResponse>(url, {
+    method: 'GET',
+  })
+
+  return camelCaseKeys<SuperAdminTenantListResponse>(response)
+}
+
 export async function updateSuperAdminTenantPlan(payload: UpdateTenantPlanPayload): Promise<void> {
   await coreApi(`${SUPER_ADMIN_TENANTS_ENDPOINT}/${payload.tenantId}/plan`, {
     method: 'PATCH',
@@ -68,10 +95,23 @@ export async function updateSuperAdminTenantPlan(payload: UpdateTenantPlanPayloa
   })
 }
 
+export async function updateSuperAdminTenantStoragePlan(payload: UpdateTenantStoragePlanPayload): Promise<void> {
+  await coreApi(`${SUPER_ADMIN_TENANTS_ENDPOINT}/${payload.tenantId}/storage-plan`, {
+    method: 'PATCH',
+    body: { storagePlanId: payload.storagePlanId },
+  })
+}
+
 export async function updateSuperAdminTenantBan(payload: UpdateTenantBanPayload): Promise<void> {
   await coreApi(`${SUPER_ADMIN_TENANTS_ENDPOINT}/${payload.tenantId}/ban`, {
     method: 'PATCH',
     body: { banned: payload.banned },
+  })
+}
+
+export async function deleteSuperAdminTenant(tenantId: string): Promise<void> {
+  await coreApi(`${SUPER_ADMIN_TENANTS_ENDPOINT}/${tenantId}`, {
+    method: 'DELETE',
   })
 }
 

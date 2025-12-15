@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import {
+  deleteSuperAdminTenant,
   fetchSuperAdminSettings,
+  fetchSuperAdminStorageTenants,
   fetchSuperAdminTenantPhotos,
   fetchSuperAdminTenants,
   updateSuperAdminSettings,
   updateSuperAdminTenantBan,
   updateSuperAdminTenantPlan,
+  updateSuperAdminTenantStoragePlan,
 } from './api'
 import type {
   SuperAdminSettingsResponse,
@@ -16,10 +19,12 @@ import type {
   UpdateSuperAdminSettingsPayload,
   UpdateTenantBanPayload,
   UpdateTenantPlanPayload,
+  UpdateTenantStoragePlanPayload,
 } from './types'
 
 export const SUPER_ADMIN_SETTINGS_QUERY_KEY = ['super-admin', 'settings'] as const
 export const SUPER_ADMIN_TENANTS_QUERY_KEY = ['super-admin', 'tenants'] as const
+export const SUPER_ADMIN_STORAGE_TENANTS_QUERY_KEY = ['super-admin', 'tenants', 'storage'] as const
 
 export function useSuperAdminSettingsQuery() {
   return useQuery<SuperAdminSettingsResponse>({
@@ -33,6 +38,14 @@ export function useSuperAdminTenantsQuery(params?: SuperAdminTenantListParams) {
   return useQuery<SuperAdminTenantListResponse>({
     queryKey: [...SUPER_ADMIN_TENANTS_QUERY_KEY, params],
     queryFn: () => fetchSuperAdminTenants(params),
+    placeholderData: (previousData) => previousData,
+  })
+}
+
+export function useSuperAdminStorageTenantsQuery(params?: SuperAdminTenantListParams) {
+  return useQuery<SuperAdminTenantListResponse>({
+    queryKey: [...SUPER_ADMIN_STORAGE_TENANTS_QUERY_KEY, params],
+    queryFn: () => fetchSuperAdminStorageTenants(params),
     placeholderData: (previousData) => previousData,
   })
 }
@@ -62,6 +75,21 @@ export function useUpdateTenantPlanMutation() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_TENANTS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_STORAGE_TENANTS_QUERY_KEY })
+    },
+  })
+}
+
+export function useUpdateTenantStoragePlanMutation() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (payload: UpdateTenantStoragePlanPayload) => {
+      await updateSuperAdminTenantStoragePlan(payload)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_TENANTS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_STORAGE_TENANTS_QUERY_KEY })
     },
   })
 }
@@ -75,6 +103,21 @@ export function useUpdateTenantBanMutation() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_TENANTS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_STORAGE_TENANTS_QUERY_KEY })
+    },
+  })
+}
+
+export function useDeleteTenantMutation() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (tenantId: string) => {
+      await deleteSuperAdminTenant(tenantId)
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_TENANTS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_STORAGE_TENANTS_QUERY_KEY })
     },
   })
 }

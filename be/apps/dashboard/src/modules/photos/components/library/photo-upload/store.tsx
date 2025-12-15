@@ -4,6 +4,8 @@ import type { StoreApi } from 'zustand'
 import { useStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
 
+import { presentBillingUpgradeModal, resolveBillingUpgradeCategory } from '~/modules/billing/upgrade-prompts'
+
 import type { PhotoSyncProgressEvent } from '../../../types'
 import type { PhotoUploadRequestOptions } from '../upload.types'
 import type { FileProgressEntry, ProcessingLogEntry, ProcessingState, WorkflowPhase } from './types'
@@ -56,7 +58,8 @@ const PhotoUploadStoreContext = createContext<PhotoUploadStore | null>(null)
 const computeUploadedBytes = (entries: FileProgressEntry[]) => calculateUploadedBytes(entries)
 const MAX_PROCESSING_LOGS = 200
 let processingLogSequence = 0
-const UPLOAD_REQUEST_TIMEOUT_MS = 120_000
+// Extend upload request timeout to tolerate larger batches / slower networks (10 minutes).
+const UPLOAD_REQUEST_TIMEOUT_MS = 600_000
 
 export function createPhotoUploadStore(params: PhotoUploadStoreParams): PhotoUploadStore {
   const { files: initialFiles, availableTags, onUpload, onClose } = params
@@ -318,6 +321,10 @@ export function createPhotoUploadStore(params: PhotoUploadStoreParams): PhotoUpl
             const currentFiles = get().files
             updateEntries(() => createFileEntries(currentFiles))
           } else {
+            const upgradeCategory = resolveBillingUpgradeCategory(error)
+            if (upgradeCategory) {
+              presentBillingUpgradeModal(upgradeCategory)
+            }
             const message = getErrorMessage(error, '上传失败，请稍后再试。')
             set({
               uploadError: message,

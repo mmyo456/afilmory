@@ -118,21 +118,29 @@ export class TenantService {
   async listTenants(options?: {
     page?: number
     limit?: number
+    search?: string
     status?: TenantRecord['status']
     sortBy?: 'createdAt' | 'name'
     sortDir?: 'asc' | 'desc'
+    requireStoragePlan?: boolean
   }): Promise<{ items: TenantAggregate[]; total: number }> {
     return await this.repository.listTenants({
       page: options?.page ?? 1,
       limit: options?.limit ?? 20,
+      search: options?.search,
       status: options?.status,
       sortBy: options?.sortBy,
       sortDir: options?.sortDir,
+      requireStoragePlan: options?.requireStoragePlan,
     })
   }
 
   async setBanned(id: string, banned: boolean): Promise<void> {
     await this.repository.updateBanned(id, banned)
+  }
+
+  async updateStoragePlan(id: string, storagePlanId: string | null): Promise<void> {
+    await this.repository.updateStoragePlan(id, storagePlanId)
   }
 
   async isSlugAvailable(slug: string): Promise<boolean> {
@@ -142,7 +150,11 @@ export class TenantService {
     }
 
     const existing = await this.repository.findBySlug(normalized)
-    return existing === null
+    if (!existing) {
+      return true
+    }
+
+    return existing.tenant.status === 'pending'
   }
 
   ensureTenantIsActive(tenant: TenantAggregate['tenant'], options?: { allowPending?: boolean }): void {
